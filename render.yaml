@@ -2,8 +2,9 @@ services:
   - type: web
     name: telegram-social-downloader
     env: python
+    pythonVersion: "3.11.0"  # Add this line
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:flask_app --bind 0.0.0.0:$PORT --timeout 120
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --timeout 120
     envVars:
       - key: TELEGRAM_BOT_TOKEN
         sync: false
