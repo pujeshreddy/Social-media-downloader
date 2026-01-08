@@ -16,18 +16,18 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Flask app for health checks
-flask_app = Flask(__name__)
+# Flask app for health checks - MUST be named 'app' for gunicorn
+app = Flask(__name__)
 
-@flask_app.route('/')
+@app.route('/')
 def home():
     return "🤖 Telegram Social Downloader Bot is Running!"
 
-@flask_app.route('/health')
+@app.route('/health')
 def health():
     return {"status": "healthy"}, 200
 
-@flask_app.route('/ping')
+@app.route('/ping')
 def ping():
     return "pong", 200
 
@@ -35,8 +35,12 @@ def ping():
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 API_URL = "https://socialdownloder2.anshapi.workers.dev/"
 
-# Initialize Telegram Bot
-application = Application.builder().token(TOKEN).build()
+# Initialize Telegram Bot (only if token exists)
+if TOKEN:
+    application = Application.builder().token(TOKEN).build()
+else:
+    application = None
+    logger.warning("TELEGRAM_BOT_TOKEN not set!")
 
 # Bot Handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -47,15 +51,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 🤖 *Social Media Downloader Bot*
 
 Send me any social media URL to download content!
-Supported: YouTube, Instagram, Facebook, Twitter/X, TikTok, etc.
 """
     
     keyboard = [
         [InlineKeyboardButton("📸 Instagram", callback_data='help_instagram'),
          InlineKeyboardButton("🎬 YouTube", callback_data='help_youtube')],
         [InlineKeyboardButton("📘 Facebook", callback_data='help_facebook'),
-         InlineKeyboardButton("🐦 Twitter/X", callback_data='help_twitter')],
-        [InlineKeyboardButton("🎵 TikTok", callback_data='help_tiktok')]
+         InlineKeyboardButton("🐦 Twitter/X", callback_data='help_twitter')]
     ]
     
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -78,12 +80,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await process_url(update, context, url)
     else:
         await update.message.reply_text(
-            "Please send a valid social media URL to download.\nExample: https://www.youtube.com/watch?v=..."
+            "Please send a valid social media URL.\nExample: https://www.youtube.com/watch?v=..."
         )
 
 async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str):
     processing_msg = await update.message.reply_text(
-        f"🔄 Processing your URL...",
+        f"🔄 Processing...",
         parse_mode='Markdown'
     )
     
@@ -93,20 +95,29 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
         response = requests.get(API_URL, params=params, timeout=30)
         
         if response.status_code == 200:
+            # Try to parse as JSON
+            try:
+                data = response.json()
+                if 'url' in data:
+                    download_url = data['url']
+                else:
+                    download_url = response.text[:200]  # First 200 chars
+            except:
+                download_url = response.text[:200]
+            
             await processing_msg.edit_text(
-                f"✅ Download link ready!\n\n"
-                f"Click here: {response.text[:200]}...\n\n"
-                f"Or visit: {API_URL}?url={url}"
+                f"✅ *Download Ready!*\n\n"
+                f"Click here: {download_url}\n\n"
+                f"Or copy this link in your browser."
             )
         else:
             await processing_msg.edit_text(
-                f"❌ Could not download. Status: {response.status_code}\n\n"
-                f"Try another URL or try again later."
+                f"❌ Error: Status {response.status_code}\n\nTry another URL."
             )
     except Exception as e:
         logger.error(f"Error: {e}")
         await processing_msg.edit_text(
-            f"❌ Error: {str(e)[:100]}..."
+            f"❌ Error downloading. Try again."
         )
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -121,34 +132,42 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'instagram': '📸 Instagram',
             'youtube': '🎬 YouTube', 
             'facebook': '📘 Facebook',
-            'twitter': '🐦 Twitter/X',
-            'tiktok': '🎵 TikTok'
+            'twitter': '🐦 Twitter/X'
         }
         await query.edit_message_text(
             f"Send any {platform_names.get(platform, platform)} URL to download!"
         )
 
-# Add handlers
-application.add_handler(CommandHandler("start", start))
-application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-application.add_handler(CallbackQueryHandler(button_callback))
-
 def run_flask():
     port = int(os.environ.get('PORT', 10000))
-    flask_app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
 
-def main():
-    # Check token
+def run_bot():
     if not TOKEN:
-        logger.error("TELEGRAM_BOT_TOKEN not set!")
+        logger.error("TELEGRAM_BOT_TOKEN not set! Bot will not start.")
         return
     
-    # Start Flask in background thread
-    flask_thread = Thread(target=run_flask, daemon=True)
-    flask_thread.start()
+    # Add handlers
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(CallbackQueryHandler(button_callback))
     
-    logger.info("Starting bot...")
+    logger.info("Starting Telegram bot...")
     application.run_polling()
+
+def main():
+    # Start Flask in main thread (required for Render)
+    port = int(os.environ.get('PORT', 10000))
+    logger.info(f"Starting Flask on port {port}")
+    
+    # Start bot in background thread
+    if TOKEN:
+        bot_thread = Thread(target=run_bot, daemon=True)
+        bot_thread.start()
+        logger.info("Bot thread started")
+    
+    # Run Flask in main thread
+    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
 
 if __name__ == '__main__':
     main()
